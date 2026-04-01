@@ -983,7 +983,7 @@ export default function App() {
       try {
         const { data, error } = await supabase
           .from('projects')
-          .select('id, name, data, updated_at')
+          .select('id, text, updated_at')
           .eq('user_id', user.id)
           .order('updated_at', { ascending: false });
         if (error) throw error;
@@ -996,9 +996,8 @@ export default function App() {
         } catch {}
         // Supabase wins on conflict; append any local-only projects not yet synced
         const merged = data.map((row) => ({
-          ...row.data,
-          id: row.data.id ?? row.id,
-          name: row.name,
+          ...row.text,
+          id: row.text.id ?? row.id,
         }));
         localMap.forEach((lp) => {
           if (!merged.find((p) => String(p.id) === String(lp.id))) merged.push(lp);
@@ -1017,12 +1016,11 @@ export default function App() {
     setProjects((prev) => [...prev, p]);
     setActiveId(p.id);
     // Do NOT send the `id` column — it's int8 but our ids are strings.
-    // The string id lives inside the `data` jsonb field only.
+    // The string id lives inside the `text` jsonb field only.
     console.log('[Supabase] createProject: inserting', { name: p.name, appId: p.id });
     try {
       const { data, error } = await supabase.from('projects').insert({
-        name: p.name,
-        data: p,
+        text: p,
         user_id: user.id,
         updated_at: new Date().toISOString(),
       }).select();
@@ -1035,21 +1033,21 @@ export default function App() {
 
   const updateProject = async (updated) => {
     setProjects((prev) => prev.map((p) => (p.id === updated.id ? updated : p)));
-    // Filter by user_id + data->>'id' (string id stored in jsonb)
+    // Filter by user_id + text->>'id' (string id stored in jsonb)
     console.log('[Supabase] updateProject: updating', { appId: updated.id, name: updated.name });
     try {
-      const payload = { name: updated.name, data: updated, updated_at: new Date().toISOString() };
+      const payload = { text: updated, updated_at: new Date().toISOString() };
       const { data: rows, error } = await supabase.from('projects')
         .update(payload)
         .eq('user_id', user.id)
-        .eq('data->>id', updated.id)
+        .eq('text->>id', updated.id)
         .select();
       if (error) throw error;
       if (!rows || rows.length === 0) {
         // Row missing (e.g. created offline) — insert it
         console.log('[Supabase] updateProject: no row found, inserting instead');
         const { data: inserted, error: insertErr } = await supabase.from('projects')
-          .insert({ name: updated.name, data: updated, user_id: user.id, updated_at: new Date().toISOString() })
+          .insert({ text: updated, user_id: user.id, updated_at: new Date().toISOString() })
           .select();
         if (insertErr) throw insertErr;
         console.log('[Supabase] updateProject: insert success', inserted);
@@ -1068,7 +1066,7 @@ export default function App() {
       const { error } = await supabase.from('projects')
         .delete()
         .eq('user_id', user.id)
-        .eq('data->>id', id);
+        .eq('text->>id', id);
       if (error) throw error;
       console.log('[Supabase] deleteProject: delete success', { appId: id });
     } catch (err) {
