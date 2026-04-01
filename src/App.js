@@ -743,7 +743,7 @@ function ProjectScreen({ project, onBack, onUpdate }) {
 }
 
 // ─── Home Screen ──────────────────────────────────────────────────────────────
-function HomeScreen({ projects, onCreate, onOpen }) {
+function HomeScreen({ projects, onCreate, onOpen, onDelete }) {
   const [showModal, setShowModal] = useState(false);
   const [newName, setNewName] = useState('');
 
@@ -797,12 +797,25 @@ function HomeScreen({ projects, onCreate, onOpen }) {
                 return (
                   <div
                     key={p.id}
-                    style={{ ...cardStyle, borderTop: `4px solid ${accent}`, cursor: 'pointer' }}
+                    style={{ ...cardStyle, borderTop: `4px solid ${accent}`, cursor: 'pointer', position: 'relative' }}
                     onClick={() => onOpen(p.id)}
                     onMouseEnter={(e) => (e.currentTarget.style.boxShadow = '0 6px 24px rgba(0,0,0,0.11)')}
                     onMouseLeave={(e) => (e.currentTarget.style.boxShadow = 'none')}
                   >
-                    <div style={{ fontFamily: FONT_DISPLAY, fontSize: 17, fontWeight: 600, color: C.dark, marginBottom: 6 }}>
+                    <button
+                      title="Delete project"
+                      style={{
+                        position: 'absolute', top: 10, right: 10,
+                        background: 'transparent', border: 'none', cursor: 'pointer',
+                        color: C.light, fontSize: 15, lineHeight: 1, padding: '2px 5px', borderRadius: 4,
+                      }}
+                      onClick={(e) => { e.stopPropagation(); onDelete(p.id); }}
+                      onMouseEnter={(e) => (e.currentTarget.style.color = C.rose)}
+                      onMouseLeave={(e) => (e.currentTarget.style.color = C.light)}
+                    >
+                      ✕
+                    </button>
+                    <div style={{ fontFamily: FONT_DISPLAY, fontSize: 17, fontWeight: 600, color: C.dark, marginBottom: 6, paddingRight: 24 }}>
                       {p.name}
                     </div>
                     {p.hookStatement && (
@@ -871,12 +884,14 @@ export default function App() {
   // On load, fetch all projects from Supabase and merge with localStorage
   useEffect(() => {
     async function fetchProjects() {
+      console.log('[Supabase] fetchProjects: starting fetch...');
       try {
         const { data, error } = await supabase
           .from('projects')
           .select('id, name, data, updated_at')
           .order('updated_at', { ascending: false });
         if (error) throw error;
+        console.log('[Supabase] fetchProjects: received', data?.length ?? 0, 'rows', data);
         if (!data || data.length === 0) return;
         // Build a map from local projects keyed by id
         const localMap = new Map();
@@ -896,9 +911,10 @@ export default function App() {
             merged.push(lp);
           }
         });
+        console.log('[Supabase] fetchProjects: merged projects', merged);
         setProjects(merged);
       } catch (err) {
-        console.warn('Supabase fetch failed, using localStorage:', err);
+        console.warn('[Supabase] fetchProjects failed, using localStorage:', err);
       }
     }
     fetchProjects();
@@ -908,29 +924,60 @@ export default function App() {
     const p = makeProject(name);
     setProjects((prev) => [...prev, p]);
     setActiveId(p.id);
+    // Do NOT send the `id` column — it's int8 in Supabase but our ids are strings.
+    // The string id lives inside the `data` jsonb field only.
+    console.log('[Supabase] createProject: inserting', { name: p.name, appId: p.id });
     try {
-      await supabase.from('projects').insert({
-        id: p.id,
+      const { data, error } = await supabase.from('projects').insert({
         name: p.name,
         data: p,
         updated_at: new Date().toISOString(),
-      });
+      }).select();
+      if (error) throw error;
+      console.log('[Supabase] createProject: insert success', data);
     } catch (err) {
-      console.warn('Supabase insert failed:', err);
+      console.warn('[Supabase] createProject: insert failed', err);
     }
   };
 
   const updateProject = async (updated) => {
     setProjects((prev) => prev.map((p) => (p.id === updated.id ? updated : p)));
+    // Filter by data->>'id' (the string id stored in jsonb) instead of the int8 id column.
+    console.log('[Supabase] updateProject: updating', { appId: updated.id, name: updated.name });
     try {
-      await supabase.from('projects').upsert({
-        id: updated.id,
-        name: updated.name,
-        data: updated,
-        updated_at: new Date().toISOString(),
-      }, { onConflict: 'id' });
+      const payload = { name: updated.name, data: updated, updated_at: new Date().toISOString() };
+      const { data: rows, error } = await supabase.from('projects')
+        .update(payload)
+        .eq('data->>id', updated.id)
+        .select();
+      if (error) throw error;
+      if (!rows || rows.length === 0) {
+        // Row doesn't exist yet (e.g. created offline) — insert it
+        console.log('[Supabase] updateProject: no row found, inserting instead');
+        const { data: inserted, error: insertErr } = await supabase.from('projects')
+          .insert({ name: updated.name, data: updated, updated_at: new Date().toISOString() })
+          .select();
+        if (insertErr) throw insertErr;
+        console.log('[Supabase] updateProject: insert success', inserted);
+      } else {
+        console.log('[Supabase] updateProject: update success', rows);
+      }
     } catch (err) {
-      console.warn('Supabase upsert failed:', err);
+      console.warn('[Supabase] updateProject: failed', err);
+    }
+  };
+
+  const deleteProject = async (id) => {
+    setProjects((prev) => prev.filter((p) => p.id !== id));
+    console.log('[Supabase] deleteProject: deleting', { appId: id });
+    try {
+      const { error } = await supabase.from('projects')
+        .delete()
+        .eq('data->>id', id);
+      if (error) throw error;
+      console.log('[Supabase] deleteProject: delete success', { appId: id });
+    } catch (err) {
+      console.warn('[Supabase] deleteProject: delete failed', err);
     }
   };
 
@@ -941,7 +988,7 @@ export default function App() {
       {active ? (
         <ProjectScreen project={active} onBack={() => setActiveId(null)} onUpdate={updateProject} />
       ) : (
-        <HomeScreen projects={projects} onCreate={createProject} onOpen={setActiveId} />
+        <HomeScreen projects={projects} onCreate={createProject} onOpen={setActiveId} onDelete={deleteProject} />
       )}
     </div>
   );
