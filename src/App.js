@@ -1,4 +1,10 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { createClient } from '@supabase/supabase-js';
+
+const supabase = createClient(
+  'https://flukyubjlnhhcfadqdib.supabase.co',
+  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZsdWt5dWJqbG5oaGNmYWRxZGliIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzUwNDIwODAsImV4cCI6MjA5MDYxODA4MH0.S7L855AZjYdOghmiwyI_yKeEt-tvEp_O-dytoe2nVaY'
+);
 
 // Inject Google Fonts
 (function () {
@@ -855,20 +861,78 @@ export default function App() {
   });
   const [activeId, setActiveId] = useState(null);
 
+  // Persist to localStorage on every change (fallback)
   useEffect(() => {
     try {
       localStorage.setItem('frame-app-projects', JSON.stringify(projects));
     } catch {}
   }, [projects]);
 
-  const createProject = (name) => {
+  // On load, fetch all projects from Supabase and merge with localStorage
+  useEffect(() => {
+    async function fetchProjects() {
+      try {
+        const { data, error } = await supabase
+          .from('projects')
+          .select('id, name, data, updated_at')
+          .order('updated_at', { ascending: false });
+        if (error) throw error;
+        if (!data || data.length === 0) return;
+        // Build a map from local projects keyed by id
+        const localMap = new Map();
+        try {
+          const saved = localStorage.getItem('frame-app-projects');
+          if (saved) JSON.parse(saved).forEach((p) => localMap.set(String(p.id), p));
+        } catch {}
+        // Merge: Supabase wins on conflict (it's the source of truth for sync)
+        const merged = data.map((row) => ({
+          ...row.data,
+          id: row.data.id ?? row.id,
+          name: row.name,
+        }));
+        // Include any local-only projects not yet in Supabase
+        localMap.forEach((lp) => {
+          if (!merged.find((p) => String(p.id) === String(lp.id))) {
+            merged.push(lp);
+          }
+        });
+        setProjects(merged);
+      } catch (err) {
+        console.warn('Supabase fetch failed, using localStorage:', err);
+      }
+    }
+    fetchProjects();
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const createProject = async (name) => {
     const p = makeProject(name);
     setProjects((prev) => [...prev, p]);
     setActiveId(p.id);
+    try {
+      await supabase.from('projects').insert({
+        id: p.id,
+        name: p.name,
+        data: p,
+        updated_at: new Date().toISOString(),
+      });
+    } catch (err) {
+      console.warn('Supabase insert failed:', err);
+    }
   };
 
-  const updateProject = (updated) =>
+  const updateProject = async (updated) => {
     setProjects((prev) => prev.map((p) => (p.id === updated.id ? updated : p)));
+    try {
+      await supabase.from('projects').upsert({
+        id: updated.id,
+        name: updated.name,
+        data: updated,
+        updated_at: new Date().toISOString(),
+      }, { onConflict: 'id' });
+    } catch (err) {
+      console.warn('Supabase upsert failed:', err);
+    }
+  };
 
   const active = projects.find((p) => p.id === activeId);
 
