@@ -742,8 +742,76 @@ function ProjectScreen({ project, onBack, onUpdate }) {
   );
 }
 
+// ─── Login Screen ─────────────────────────────────────────────────────────────
+function LoginScreen() {
+  const [email, setEmail]       = useState('');
+  const [password, setPassword] = useState('');
+  const [error, setError]       = useState('');
+  const [message, setMessage]   = useState('');
+  const [loading, setLoading]   = useState(false);
+
+  const handleSignIn = async () => {
+    setError(''); setMessage(''); setLoading(true);
+    const { error: err } = await supabase.auth.signInWithPassword({ email, password });
+    setLoading(false);
+    if (err) setError(err.message);
+  };
+
+  const handleSignUp = async () => {
+    setError(''); setMessage(''); setLoading(true);
+    const { error: err } = await supabase.auth.signUp({ email, password });
+    setLoading(false);
+    if (err) setError(err.message);
+    else setMessage('Check your email to confirm your account, then sign in.');
+  };
+
+  return (
+    <div style={{ minHeight: '100vh', background: C.bg, display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: FONT_SERIF }}>
+      <div style={{ ...cardStyle, width: '100%', maxWidth: 400, padding: '40px 36px' }}>
+        <div style={{ fontFamily: FONT_DISPLAY, fontSize: 32, fontWeight: 700, color: C.dark, marginBottom: 4 }}>Frame.</div>
+        <div style={{ ...monoStyle, color: C.light, marginBottom: 32 }}>VIDEO PRE-PRODUCTION PLANNER</div>
+        <input
+          style={{ ...inputStyle, marginBottom: 12 }}
+          type="email"
+          placeholder="Email"
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+          onKeyDown={(e) => e.key === 'Enter' && handleSignIn()}
+          autoFocus
+        />
+        <input
+          style={{ ...inputStyle, marginBottom: 20 }}
+          type="password"
+          placeholder="Password"
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+          onKeyDown={(e) => e.key === 'Enter' && handleSignIn()}
+        />
+        {error   && <div style={{ color: C.rose, fontSize: 13, marginBottom: 14 }}>{error}</div>}
+        {message && <div style={{ color: C.sage, fontSize: 13, marginBottom: 14 }}>{message}</div>}
+        <div style={{ display: 'flex', gap: 10 }}>
+          <button
+            style={{ ...btnStyle(C.terracotta), flex: 1, opacity: loading ? 0.6 : 1 }}
+            onClick={handleSignIn}
+            disabled={loading}
+          >
+            Sign In
+          </button>
+          <button
+            style={{ ...ghostStyle(C.dustyBlue), flex: 1, opacity: loading ? 0.6 : 1 }}
+            onClick={handleSignUp}
+            disabled={loading}
+          >
+            Create Account
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── Home Screen ──────────────────────────────────────────────────────────────
-function HomeScreen({ projects, onCreate, onOpen, onDelete }) {
+function HomeScreen({ projects, onCreate, onOpen, onDelete, onSignOut, userEmail }) {
   const [showModal, setShowModal] = useState(false);
   const [newName, setNewName] = useState('');
 
@@ -763,13 +831,21 @@ function HomeScreen({ projects, onCreate, onOpen, onDelete }) {
       <div style={{ background: C.dark, padding: '28px 40px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
         <div>
           <div style={{ fontFamily: FONT_DISPLAY, fontSize: 32, fontWeight: 700, color: C.paper, letterSpacing: '-0.5px' }}>
-            Frame
+            Frame.
           </div>
           <div style={{ ...monoStyle, color: C.light, marginTop: 3 }}>VIDEO PRE-PRODUCTION PLANNER</div>
         </div>
-        <button style={{ ...btnStyle(C.terracotta) }} onClick={() => setShowModal(true)}>
-          + New Project
-        </button>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          <button style={{ ...btnStyle(C.terracotta) }} onClick={() => setShowModal(true)}>
+            + New Project
+          </button>
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 4 }}>
+            <span style={{ ...monoStyle, color: C.light, fontSize: 11 }}>{userEmail}</span>
+            <button style={{ ...ghostStyle(C.light), padding: '4px 12px', fontSize: 12 }} onClick={onSignOut}>
+              Sign Out
+            </button>
+          </div>
+        </div>
       </div>
 
       {/* Body */}
@@ -864,52 +940,68 @@ function HomeScreen({ projects, onCreate, onOpen, onDelete }) {
 
 // ─── Root App ─────────────────────────────────────────────────────────────────
 export default function App() {
-  const [projects, setProjects] = useState(() => {
-    try {
-      const saved = localStorage.getItem('frame-app-projects');
-      return saved ? JSON.parse(saved) : [];
-    } catch {
-      return [];
-    }
-  });
+  const [user, setUser]         = useState(null);
+  const [authLoading, setAuthLoading] = useState(true);
+  const [projects, setProjects] = useState([]);
   const [activeId, setActiveId] = useState(null);
 
-  // Persist to localStorage on every change (fallback)
+  // Resolve the initial session, then subscribe to auth changes
   useEffect(() => {
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setUser(session?.user ?? null);
+      setAuthLoading(false);
+    });
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      setUser(session?.user ?? null);
+    });
+    return () => subscription.unsubscribe();
+  }, []);
+
+  // Persist to localStorage as fallback whenever projects change
+  useEffect(() => {
+    if (!user) return;
     try {
       localStorage.setItem('frame-app-projects', JSON.stringify(projects));
     } catch {}
-  }, [projects]);
+  }, [projects, user]);
 
-  // On load, fetch all projects from Supabase and merge with localStorage
+  // Fetch projects from Supabase when user signs in; clear on sign-out
   useEffect(() => {
+    if (!user) {
+      setProjects([]);
+      setActiveId(null);
+      return;
+    }
+    // Show localStorage data instantly while the network request is in flight
+    try {
+      const saved = localStorage.getItem('frame-app-projects');
+      if (saved) setProjects(JSON.parse(saved));
+    } catch {}
+
     async function fetchProjects() {
-      console.log('[Supabase] fetchProjects: starting fetch...');
+      console.log('[Supabase] fetchProjects: starting fetch for user', user.id);
       try {
         const { data, error } = await supabase
           .from('projects')
           .select('id, name, data, updated_at')
+          .eq('user_id', user.id)
           .order('updated_at', { ascending: false });
         if (error) throw error;
         console.log('[Supabase] fetchProjects: received', data?.length ?? 0, 'rows', data);
         if (!data || data.length === 0) return;
-        // Build a map from local projects keyed by id
         const localMap = new Map();
         try {
           const saved = localStorage.getItem('frame-app-projects');
           if (saved) JSON.parse(saved).forEach((p) => localMap.set(String(p.id), p));
         } catch {}
-        // Merge: Supabase wins on conflict (it's the source of truth for sync)
+        // Supabase wins on conflict; append any local-only projects not yet synced
         const merged = data.map((row) => ({
           ...row.data,
           id: row.data.id ?? row.id,
           name: row.name,
         }));
-        // Include any local-only projects not yet in Supabase
         localMap.forEach((lp) => {
-          if (!merged.find((p) => String(p.id) === String(lp.id))) {
-            merged.push(lp);
-          }
+          if (!merged.find((p) => String(p.id) === String(lp.id))) merged.push(lp);
         });
         console.log('[Supabase] fetchProjects: merged projects', merged);
         setProjects(merged);
@@ -918,19 +1010,20 @@ export default function App() {
       }
     }
     fetchProjects();
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [user]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const createProject = async (name) => {
     const p = makeProject(name);
     setProjects((prev) => [...prev, p]);
     setActiveId(p.id);
-    // Do NOT send the `id` column — it's int8 in Supabase but our ids are strings.
+    // Do NOT send the `id` column — it's int8 but our ids are strings.
     // The string id lives inside the `data` jsonb field only.
     console.log('[Supabase] createProject: inserting', { name: p.name, appId: p.id });
     try {
       const { data, error } = await supabase.from('projects').insert({
         name: p.name,
         data: p,
+        user_id: user.id,
         updated_at: new Date().toISOString(),
       }).select();
       if (error) throw error;
@@ -942,20 +1035,21 @@ export default function App() {
 
   const updateProject = async (updated) => {
     setProjects((prev) => prev.map((p) => (p.id === updated.id ? updated : p)));
-    // Filter by data->>'id' (the string id stored in jsonb) instead of the int8 id column.
+    // Filter by user_id + data->>'id' (string id stored in jsonb)
     console.log('[Supabase] updateProject: updating', { appId: updated.id, name: updated.name });
     try {
       const payload = { name: updated.name, data: updated, updated_at: new Date().toISOString() };
       const { data: rows, error } = await supabase.from('projects')
         .update(payload)
+        .eq('user_id', user.id)
         .eq('data->>id', updated.id)
         .select();
       if (error) throw error;
       if (!rows || rows.length === 0) {
-        // Row doesn't exist yet (e.g. created offline) — insert it
+        // Row missing (e.g. created offline) — insert it
         console.log('[Supabase] updateProject: no row found, inserting instead');
         const { data: inserted, error: insertErr } = await supabase.from('projects')
-          .insert({ name: updated.name, data: updated, updated_at: new Date().toISOString() })
+          .insert({ name: updated.name, data: updated, user_id: user.id, updated_at: new Date().toISOString() })
           .select();
         if (insertErr) throw insertErr;
         console.log('[Supabase] updateProject: insert success', inserted);
@@ -973,6 +1067,7 @@ export default function App() {
     try {
       const { error } = await supabase.from('projects')
         .delete()
+        .eq('user_id', user.id)
         .eq('data->>id', id);
       if (error) throw error;
       console.log('[Supabase] deleteProject: delete success', { appId: id });
@@ -981,6 +1076,19 @@ export default function App() {
     }
   };
 
+  const signOut = async () => {
+    await supabase.auth.signOut();
+    localStorage.removeItem('frame-app-projects');
+  };
+
+  if (authLoading) return (
+    <div style={{ fontFamily: FONT_SERIF, background: C.bg, minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', color: C.light }}>
+      Loading…
+    </div>
+  );
+
+  if (!user) return <LoginScreen />;
+
   const active = projects.find((p) => p.id === activeId);
 
   return (
@@ -988,7 +1096,14 @@ export default function App() {
       {active ? (
         <ProjectScreen project={active} onBack={() => setActiveId(null)} onUpdate={updateProject} />
       ) : (
-        <HomeScreen projects={projects} onCreate={createProject} onOpen={setActiveId} onDelete={deleteProject} />
+        <HomeScreen
+          projects={projects}
+          onCreate={createProject}
+          onOpen={setActiveId}
+          onDelete={deleteProject}
+          onSignOut={signOut}
+          userEmail={user.email}
+        />
       )}
     </div>
   );
