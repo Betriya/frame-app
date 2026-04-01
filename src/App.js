@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 
 // Inject Google Fonts
 (function () {
@@ -845,8 +845,21 @@ function HomeScreen({ projects, onCreate, onOpen }) {
 
 // ─── Root App ─────────────────────────────────────────────────────────────────
 export default function App() {
-  const [projects, setProjects] = useState([]);
+  const [projects, setProjects] = useState(() => {
+    try {
+      const saved = localStorage.getItem('frame-app-projects');
+      return saved ? JSON.parse(saved) : [];
+    } catch {
+      return [];
+    }
+  });
   const [activeId, setActiveId] = useState(null);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('frame-app-projects', JSON.stringify(projects));
+    } catch {}
+  }, [projects]);
 
   const createProject = (name) => {
     const p = makeProject(name);
